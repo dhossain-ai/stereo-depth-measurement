@@ -446,29 +446,19 @@ def display_filtering(corners_left, corners_right, matches_before, matches_after
     plt.show()
 
 def display_matches(img_left, img_right, corners_left, corners_right, matches, scores):
-    """
-    Draw matched feature pairs between left and right images using cv2.drawMatches.
-    
-    Converts corner points to cv2.KeyPoint format and matches to cv2.DMatch format
-    for compatibility with OpenCV's drawing function.
-    """
-    # Convert corners to KeyPoint format
+    """Draw matched feature pairs between left and right images."""
     kp_left = [cv2.KeyPoint(x=float(pt[0]), y=float(pt[1]), size=PATCH_SIZE)
                for pt in corners_left]
     kp_right = [cv2.KeyPoint(x=float(pt[0]), y=float(pt[1]), size=PATCH_SIZE)
                 for pt in corners_right]
 
-    # Convert matches to DMatch format
     dmatches = [cv2.DMatch(_queryIdx=int(i), _trainIdx=int(j), _distance=1.0 - score)
                 for (i, j), score in zip(matches, scores)]
 
-    # Sort by score (best first)
     dmatches_sorted = sorted(dmatches, key=lambda m: m.distance)
 
-    # Draw top 50 matches for clarity
     num_draw = min(50, len(dmatches_sorted))
 
-    # Convert images to RGB for drawing
     img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB)
     img_right_rgb = cv2.cvtColor(img_right, cv2.COLOR_BGR2RGB)
 
@@ -491,6 +481,70 @@ def display_matches(img_left, img_right, corners_left, corners_right, matches, s
     plt.tight_layout()
 
     output_path = os.path.join(OUTPUT_DIR, "08_matches.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
+
+def compute_disparities(corners_left, corners_right, matches, scores):
+    """
+    Compute disparity (horizontal pixel displacement) for each matched pair.
+    
+    Disparity = left_x - right_x
+    
+    Larger disparity means the object is closer to the cameras.
+    Smaller disparity means the object is farther away.
+    """
+    left_points = []
+    right_points = []
+    disparities = []
+
+    for (i, j) in matches:
+        lp = corners_left[i]
+        rp = corners_right[j]
+
+        d = lp[0] - rp[0]
+
+        left_points.append(lp)
+        right_points.append(rp)
+        disparities.append(d)
+
+    left_points = np.array(left_points)
+    right_points = np.array(right_points)
+    disparities = np.array(disparities)
+
+    print(f"Disparities computed: {len(disparities)}")
+    print(f"Disparity range: {disparities.min():.2f} — {disparities.max():.2f} pixels")
+    print(f"Disparity mean: {disparities.mean():.2f}, std: {disparities.std():.2f}")
+
+    return left_points, right_points, disparities
+
+def display_disparities(img_left, left_points, disparities):
+    """Display disparity values as color-coded scatter plot on left image."""
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+    # Scatter plot on image — color = disparity
+    img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB)
+    axes[0].imshow(img_left_rgb)
+    sc = axes[0].scatter(left_points[:, 0], left_points[:, 1],
+                         c=disparities, cmap="jet", s=15, alpha=0.8,
+                         edgecolors="black", linewidths=0.3)
+    plt.colorbar(sc, ax=axes[0], label="Disparity (pixels)")
+    axes[0].set_title(f"Disparity at Matched Points ({len(disparities)} points)")
+    axes[0].axis("off")
+
+    # Disparity histogram
+    axes[1].hist(disparities, bins=40, color="steelblue", edgecolor="black", alpha=0.8)
+    axes[1].set_xlabel("Disparity (pixels)")
+    axes[1].set_ylabel("Count")
+    axes[1].set_title("Disparity Distribution")
+    axes[1].axvline(disparities.mean(), color="red", linestyle="--",
+                    label=f"Mean = {disparities.mean():.1f}px")
+    axes[1].legend()
+
+    plt.suptitle("Disparity Calculation", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "09_disparities.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
     plt.show()
@@ -555,6 +609,13 @@ def main():
     print("\n[Step 10] Visualizing matches...")
     display_matches(img_left, img_right, valid_corners_left, valid_corners_right,
                     filtered_matches, filtered_scores)
+
+    # Step 11: Disparity calculation
+    print("\n[Step 11] Computing disparities...")
+    left_points, right_points, disparities = compute_disparities(
+        valid_corners_left, valid_corners_right, filtered_matches, filtered_scores
+    )
+    display_disparities(img_left, left_points, disparities)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
