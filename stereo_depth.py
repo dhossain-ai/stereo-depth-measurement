@@ -22,6 +22,12 @@ OUTPUT_DIR = "output"
 GAUSSIAN_KERNEL = (5, 5)
 GAUSSIAN_SIGMA = 1.0
 
+# Harris corner detection parameters
+HARRIS_BLOCK_SIZE = 2       # Neighborhood size for corner detection
+HARRIS_KSIZE = 3            # Sobel operator aperture size
+HARRIS_K = 0.04             # Harris detector free parameter
+HARRIS_THRESHOLD = 0.01     # Threshold as fraction of max corner response
+
 def load_stereo_pair(left_path, right_path):
     """Load left and right stereo images."""
     img_left = cv2.imread(left_path)
@@ -59,13 +65,11 @@ def display_stereo_pair(img_left, img_right):
 
 def preprocess(img_left, img_right):
     """Convert to grayscale and apply Gaussian blur for noise reduction."""
-    # Convert to grayscale
     gray_left = cv2.cvtColor(img_left, cv2.COLOR_BGR2GRAY)
     gray_right = cv2.cvtColor(img_right, cv2.COLOR_BGR2GRAY)
     print(f"Grayscale left:  {gray_left.shape}, dtype={gray_left.dtype}")
     print(f"Grayscale right: {gray_right.shape}, dtype={gray_right.dtype}")
 
-    # Apply Gaussian blur to reduce noise
     blur_left = cv2.GaussianBlur(gray_left, GAUSSIAN_KERNEL, GAUSSIAN_SIGMA)
     blur_right = cv2.GaussianBlur(gray_right, GAUSSIAN_KERNEL, GAUSSIAN_SIGMA)
     print(f"Gaussian blur applied: kernel={GAUSSIAN_KERNEL}, sigma={GAUSSIAN_SIGMA}")
@@ -100,6 +104,62 @@ def display_preprocessing(gray_left, gray_right, blur_left, blur_right):
     print(f"Saved: {output_path}")
     plt.show()
 
+def detect_harris_corners(blur_img):
+    """
+    Detect corners using Harris-Stephens corner detector.
+    
+    The Harris response R is computed as:
+        R = det(M) - k * trace(M)^2
+    where M is the structure tensor (second moment matrix).
+    
+    Corners have large positive R values.
+    """
+    # Convert to float32 (required by cv2.cornerHarris)
+    img_float = np.float32(blur_img)
+
+    # Compute Harris corner response
+    harris_response = cv2.cornerHarris(img_float, HARRIS_BLOCK_SIZE, HARRIS_KSIZE, HARRIS_K)
+
+    print(f"Harris response: min={harris_response.min():.6f}, max={harris_response.max():.6f}")
+
+    # Threshold to keep only strong corners
+    threshold = HARRIS_THRESHOLD * harris_response.max()
+    corner_mask = harris_response > threshold
+
+    # Get corner coordinates (y, x)
+    corners_yx = np.argwhere(corner_mask)
+    # Convert to (x, y) format
+    corners_xy = corners_yx[:, ::-1]
+
+    print(f"Corners detected: {len(corners_xy)} (threshold={HARRIS_THRESHOLD} × max)")
+
+    return harris_response, corners_xy
+
+def display_harris_left(img_left, harris_response, corners_xy):
+    """Display Harris corner response heatmap and detected corners on left image."""
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Harris response heatmap
+    axes[0].imshow(harris_response, cmap="hot")
+    axes[0].set_title("Harris Corner Response (Left)")
+    axes[0].axis("off")
+
+    # Corners overlaid on original image
+    img_display = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB).copy()
+    axes[1].imshow(img_display)
+    axes[1].scatter(corners_xy[:, 0], corners_xy[:, 1],
+                    c="red", s=2, alpha=0.6)
+    axes[1].set_title(f"Detected Corners: {len(corners_xy)} (Left)")
+    axes[1].axis("off")
+
+    plt.suptitle("Harris-Stephens Corner Detection — Left Image", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "03_harris_left.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
+
 def main():
     """Main pipeline for stereo depth measurement."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -118,6 +178,11 @@ def main():
     print("\n[Step 3] Preprocessing...")
     gray_left, gray_right, blur_left, blur_right = preprocess(img_left, img_right)
     display_preprocessing(gray_left, gray_right, blur_left, blur_right)
+
+    # Step 4: Harris corner detection on left image
+    print("\n[Step 4] Harris corner detection (left image)...")
+    harris_response_left, corners_left = detect_harris_corners(blur_left)
+    display_harris_left(img_left, harris_response_left, corners_left)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
