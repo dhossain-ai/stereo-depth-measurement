@@ -10,6 +10,7 @@ Course: Image Recognition Systems
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import griddata
 import os
 
 # ============================================================
@@ -490,9 +491,7 @@ def compute_disparities(corners_left, corners_right, matches, scores):
     Compute disparity (horizontal pixel displacement) for each matched pair.
     
     Disparity = left_x - right_x
-    
-    Larger disparity means the object is closer to the cameras.
-    Smaller disparity means the object is farther away.
+    Larger disparity = closer object, smaller disparity = farther object.
     """
     left_points = []
     right_points = []
@@ -522,7 +521,6 @@ def display_disparities(img_left, left_points, disparities):
     """Display disparity values as color-coded scatter plot on left image."""
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    # Scatter plot on image — color = disparity
     img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB)
     axes[0].imshow(img_left_rgb)
     sc = axes[0].scatter(left_points[:, 0], left_points[:, 1],
@@ -532,7 +530,6 @@ def display_disparities(img_left, left_points, disparities):
     axes[0].set_title(f"Disparity at Matched Points ({len(disparities)} points)")
     axes[0].axis("off")
 
-    # Disparity histogram
     axes[1].hist(disparities, bins=40, color="steelblue", edgecolor="black", alpha=0.8)
     axes[1].set_xlabel("Disparity (pixels)")
     axes[1].set_ylabel("Count")
@@ -545,6 +542,77 @@ def display_disparities(img_left, left_points, disparities):
     plt.tight_layout()
 
     output_path = os.path.join(OUTPUT_DIR, "09_disparities.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
+
+def create_disparity_map(img_left, left_points, disparities):
+    """
+    Create a dense disparity map by interpolating sparse disparity values
+    from matched points across the full image using scipy.interpolate.griddata.
+    
+    This gives a visual approximation of relative depth across the scene.
+    """
+    h, w = img_left.shape[:2]
+
+    # Create a grid of (x, y) coordinates for the full image
+    grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
+
+    # Interpolate sparse disparities onto the full image grid
+    # Using 'linear' for smooth results, 'nearest' to fill edges
+    disparity_map_linear = griddata(
+        points=left_points,
+        values=disparities,
+        xi=(grid_x, grid_y),
+        method="linear"
+    )
+
+    # Fill NaN regions (outside convex hull) with nearest-neighbor
+    disparity_map_nearest = griddata(
+        points=left_points,
+        values=disparities,
+        xi=(grid_x, grid_y),
+        method="nearest"
+    )
+
+    # Combine: use linear where available, nearest for NaN regions
+    disparity_map = np.where(
+        np.isnan(disparity_map_linear),
+        disparity_map_nearest,
+        disparity_map_linear
+    )
+
+    print(f"Disparity map shape: {disparity_map.shape}")
+    print(f"Disparity map range: {disparity_map.min():.2f} — {disparity_map.max():.2f}")
+
+    return disparity_map
+
+def display_disparity_map(img_left, disparity_map):
+    """Display the interpolated disparity map as a heatmap and overlay."""
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+
+    # Original image
+    img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB)
+    axes[0].imshow(img_left_rgb)
+    axes[0].set_title("Original Left Image")
+    axes[0].axis("off")
+
+    # Disparity heatmap
+    im = axes[1].imshow(disparity_map, cmap="jet")
+    plt.colorbar(im, ax=axes[1], label="Disparity (pixels)")
+    axes[1].set_title("Disparity Map (Interpolated)")
+    axes[1].axis("off")
+
+    # Overlay: disparity on top of original with transparency
+    axes[2].imshow(img_left_rgb)
+    axes[2].imshow(disparity_map, cmap="jet", alpha=0.5)
+    axes[2].set_title("Disparity Overlay")
+    axes[2].axis("off")
+
+    plt.suptitle("Disparity Map Visualization", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "10_disparity_map.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
     plt.show()
@@ -616,6 +684,11 @@ def main():
         valid_corners_left, valid_corners_right, filtered_matches, filtered_scores
     )
     display_disparities(img_left, left_points, disparities)
+
+    # Step 12: Disparity map visualization
+    print("\n[Step 12] Creating disparity map...")
+    disparity_map = create_disparity_map(img_left, left_points, disparities)
+    display_disparity_map(img_left, disparity_map)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
