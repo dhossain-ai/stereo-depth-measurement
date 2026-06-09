@@ -36,7 +36,10 @@ SUBPIX_ZERO_ZONE = (-1, -1)
 SUBPIX_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
 # Feature descriptor parameters
-PATCH_SIZE = 15             # NxN patch around each corner (must be odd)
+PATCH_SIZE = 15
+
+# NCC matching parameters
+NCC_THRESHOLD = 0.8         # Minimum NCC score to accept a match
 
 def load_stereo_pair(left_path, right_path):
     """Load left and right stereo images."""
@@ -189,10 +192,6 @@ def display_harris_both(img_left, img_right, corners_left, corners_right):
 def refine_corners(blur_img, harris_response, corners_xy):
     """
     Refine corners using non-maximum suppression and sub-pixel accuracy.
-    
-    1. NMS: Use cv2.goodFeaturesToTrack with Harris mode to select
-       well-spaced, strongest corners (enforces minimum distance).
-    2. Sub-pixel: Use cv2.cornerSubPix for sub-pixel localization.
     """
     corners_gftt = cv2.goodFeaturesToTrack(
         blur_img,
@@ -268,8 +267,6 @@ def extract_patches(blur_img, corners, patch_size=PATCH_SIZE):
     
     Each patch is normalized (zero mean, unit variance) for robustness
     against brightness/contrast differences between left and right images.
-    
-    Corners too close to the image border are discarded.
     """
     half = patch_size // 2
     h, w = blur_img.shape
@@ -279,18 +276,15 @@ def extract_patches(blur_img, corners, patch_size=PATCH_SIZE):
     for (x, y) in corners:
         xi, yi = int(round(x)), int(round(y))
 
-        # Skip corners too close to the border
         if yi - half < 0 or yi + half >= h or xi - half < 0 or xi + half >= w:
             continue
 
-        # Extract patch
         patch = blur_img[yi - half:yi + half + 1, xi - half:xi + half + 1].astype(np.float64)
 
-        # Normalize: zero mean, unit standard deviation
         mean = patch.mean()
         std = patch.std()
         if std < 1e-6:
-            continue  # Skip flat (featureless) patches
+            continue
 
         patch_normalized = (patch - mean) / std
 
@@ -307,7 +301,6 @@ def extract_patches(blur_img, corners, patch_size=PATCH_SIZE):
 
 def display_patches(blur_img, valid_corners, patches):
     """Display a sample of extracted patches to verify descriptor extraction."""
-    # Show 10 random sample patches
     num_samples = min(10, len(patches))
     indices = np.random.choice(len(patches), num_samples, replace=False)
     indices = np.sort(indices)
@@ -317,7 +310,6 @@ def display_patches(blur_img, valid_corners, patches):
     for i, idx in enumerate(indices):
         cx, cy = valid_corners[idx]
 
-        # Top row: zoomed-in region around corner on original image
         half_view = 30
         xi, yi = int(round(cx)), int(round(cy))
         y1 = max(0, yi - half_view)
@@ -331,7 +323,6 @@ def display_patches(blur_img, valid_corners, patches):
         axes[0, i].set_title(f"Corner {idx}", fontsize=8)
         axes[0, i].axis("off")
 
-        # Bottom row: normalized patch
         axes[1, i].imshow(patches[idx], cmap="gray")
         axes[1, i].set_title(f"{PATCH_SIZE}×{PATCH_SIZE}", fontsize=8)
         axes[1, i].axis("off")
@@ -346,6 +337,56 @@ def display_patches(blur_img, valid_corners, patches):
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
     plt.show()
+
+def match_features_ncc(patches_left, corners_left, patches_right, corners_right):
+    """
+    Match features between left and right images using Normalized Cross-Correlation.
+    
+    NCC formula for normalized patches (zero mean, unit variance):
+        NCC(a, b) = sum(a * b) / N
+    
+    where N is the number of pixels in the patch.
+    NCC = 1.0 means perfect match, NCC = -1.0 means inverse match.
+    
+    For each left corner, we find the best matching right corner
+    with NCC above the threshold.
+    """
+    n_left = len(patches_left)
+    n_right = len(patches_right)
+    n_pixels = patches_left[0].size  # Total pixels per patch
+
+    print(f"Matching {n_left} left patches against {n_right} right patches...")
+
+    # Flatten patches for vectorized NCC computation
+    left_flat = patches_left.reshape(n_left, -1)    # (N_left, patch_pixels)
+    right_flat = patches_right.reshape(n_right, -1)  # (N_right, patch_pixels)
+
+    # Compute NCC matrix: each entry (i, j) = NCC between left[i] and right[j]
+    # Since patches are already normalized (zero mean, unit std):
+    # NCC = dot(a, b) / N
+    ncc_matrix = (left_flat @ right_flat.T) / n_pixels  # (N_left, N_right)
+
+    # For each left patch, find best right match
+    matches = []
+    ncc_scores = []
+
+    for i in range(n_left):
+        best_j = np.argmax(ncc_matrix[i])
+        best_score = ncc_matrix[i, best_j]
+
+        if best_score >= NCC_THRESHOLD:
+            matches.append((i, best_j))
+            ncc_scores.append(best_score)
+
+    matches = np.array(matches)
+    ncc_scores = np.array(ncc_scores)
+
+    print(f"Matches found: {len(matches)} (NCC threshold={NCC_THRESHOLD})")
+    if len(ncc_scores) > 0:
+        print(f"NCC scores: min={ncc_scores.min():.4f}, max={ncc_scores.max():.4f}, "
+              f"mean={ncc_scores.mean():.4f}")
+
+    return matches, ncc_scores
 
 def main():
     """Main pipeline for stereo depth measurement."""
@@ -388,6 +429,13 @@ def main():
     patches_left, valid_corners_left = extract_patches(blur_left, corners_left_refined)
     patches_right, valid_corners_right = extract_patches(blur_right, corners_right_refined)
     display_patches(blur_left, valid_corners_left, patches_left)
+
+    # Step 8: Feature matching using NCC
+    print("\n[Step 8] Feature matching (NCC)...")
+    matches, ncc_scores = match_features_ncc(
+        patches_left, valid_corners_left,
+        patches_right, valid_corners_right
+    )
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
