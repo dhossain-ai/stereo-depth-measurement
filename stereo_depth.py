@@ -42,9 +42,9 @@ PATCH_SIZE = 15
 NCC_THRESHOLD = 0.8
 
 # Match filtering parameters
-EPIPOLAR_TOLERANCE = 5      # Max vertical (y) difference in pixels for epipolar constraint
-MIN_DISPARITY = 1           # Minimum horizontal displacement (pixels)
-MAX_DISPARITY = 200         # Maximum horizontal displacement (pixels)
+EPIPOLAR_TOLERANCE = 5
+MIN_DISPARITY = 1
+MAX_DISPARITY = 200
 
 def load_stereo_pair(left_path, right_path):
     """Load left and right stereo images."""
@@ -123,9 +123,7 @@ def display_preprocessing(gray_left, gray_right, blur_left, blur_right):
     plt.show()
 
 def detect_harris_corners(blur_img):
-    """
-    Detect corners using Harris-Stephens corner detector.
-    """
+    """Detect corners using Harris-Stephens corner detector."""
     img_float = np.float32(blur_img)
     harris_response = cv2.cornerHarris(img_float, HARRIS_BLOCK_SIZE, HARRIS_KSIZE, HARRIS_K)
 
@@ -191,9 +189,7 @@ def display_harris_both(img_left, img_right, corners_left, corners_right):
     plt.show()
 
 def refine_corners(blur_img, harris_response, corners_xy):
-    """
-    Refine corners using non-maximum suppression and sub-pixel accuracy.
-    """
+    """Refine corners using non-maximum suppression and sub-pixel accuracy."""
     corners_gftt = cv2.goodFeaturesToTrack(
         blur_img,
         maxCorners=MAX_CORNERS,
@@ -263,9 +259,7 @@ def display_refinement(img_left, img_right, corners_left_raw, corners_right_raw,
     plt.show()
 
 def extract_patches(blur_img, corners, patch_size=PATCH_SIZE):
-    """
-    Extract NxN intensity patches around each corner as feature descriptors.
-    """
+    """Extract NxN intensity patches around each corner as feature descriptors."""
     half = patch_size // 2
     h, w = blur_img.shape
     patches = []
@@ -337,14 +331,7 @@ def display_patches(blur_img, valid_corners, patches):
     plt.show()
 
 def match_features_ncc(patches_left, corners_left, patches_right, corners_right):
-    """
-    Match features between left and right images using Normalized Cross-Correlation.
-    
-    NCC formula for normalized patches (zero mean, unit variance):
-        NCC(a, b) = sum(a * b) / N
-    
-    NCC = 1.0 means perfect match, NCC = -1.0 means inverse match.
-    """
+    """Match features using Normalized Cross-Correlation."""
     n_left = len(patches_left)
     n_right = len(patches_right)
     n_pixels = patches_left[0].size
@@ -378,36 +365,22 @@ def match_features_ncc(patches_left, corners_left, patches_right, corners_right)
     return matches, ncc_scores
 
 def filter_matches(matches, ncc_scores, corners_left, corners_right):
-    """
-    Filter matches using epipolar and disparity constraints.
-    
-    Epipolar constraint: In a rectified stereo pair, matched points must
-    lie on the same horizontal scanline. We allow a small tolerance for
-    imperfect rectification.
-    
-    Disparity constraint: The horizontal displacement must be positive
-    (left image point is to the right of right image point) and within
-    a reasonable range.
-    """
+    """Filter matches using epipolar and disparity constraints."""
     filtered_matches = []
     filtered_scores = []
-    
+
     rejected_epipolar = 0
     rejected_disparity = 0
 
     for k, (i, j) in enumerate(matches):
-        left_pt = corners_left[i]    # (x, y)
-        right_pt = corners_right[j]  # (x, y)
+        left_pt = corners_left[i]
+        right_pt = corners_right[j]
 
-        # Epipolar constraint: y-coordinates must be similar
         y_diff = abs(left_pt[1] - right_pt[1])
         if y_diff > EPIPOLAR_TOLERANCE:
             rejected_epipolar += 1
             continue
 
-        # Disparity: horizontal displacement (left_x - right_x)
-        # In a standard stereo setup, objects appear shifted to the right
-        # in the left image compared to the right image
         disparity = left_pt[0] - right_pt[0]
         if disparity < MIN_DISPARITY or disparity > MAX_DISPARITY:
             rejected_disparity += 1
@@ -427,8 +400,7 @@ def filter_matches(matches, ncc_scores, corners_left, corners_right):
     return filtered_matches, filtered_scores
 
 def display_filtering(corners_left, corners_right, matches_before, matches_after):
-    """Display match filtering results — histogram of y-differences and disparities."""
-    # Compute y-differences and disparities for all raw matches
+    """Display match filtering results."""
     y_diffs_before = []
     disparities_before = []
     for (i, j) in matches_before:
@@ -447,7 +419,6 @@ def display_filtering(corners_left, corners_right, matches_before, matches_after
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Y-difference histogram
     axes[0].hist(y_diffs_before, bins=50, alpha=0.5, color="red", label=f"Before ({len(matches_before)})")
     axes[0].hist(y_diffs_after, bins=50, alpha=0.7, color="green", label=f"After ({len(matches_after)})")
     axes[0].axvline(-EPIPOLAR_TOLERANCE, color="blue", linestyle="--", label=f"±{EPIPOLAR_TOLERANCE}px")
@@ -457,7 +428,6 @@ def display_filtering(corners_left, corners_right, matches_before, matches_after
     axes[0].set_title("Epipolar Constraint Filter")
     axes[0].legend()
 
-    # Disparity histogram
     axes[1].hist(disparities_before, bins=50, alpha=0.5, color="red", label=f"Before ({len(matches_before)})")
     axes[1].hist(disparities_after, bins=50, alpha=0.7, color="green", label=f"After ({len(matches_after)})")
     axes[1].axvline(MIN_DISPARITY, color="blue", linestyle="--", label=f"[{MIN_DISPARITY}, {MAX_DISPARITY}]px")
@@ -471,6 +441,56 @@ def display_filtering(corners_left, corners_right, matches_before, matches_after
     plt.tight_layout()
 
     output_path = os.path.join(OUTPUT_DIR, "07_filtering.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
+
+def display_matches(img_left, img_right, corners_left, corners_right, matches, scores):
+    """
+    Draw matched feature pairs between left and right images using cv2.drawMatches.
+    
+    Converts corner points to cv2.KeyPoint format and matches to cv2.DMatch format
+    for compatibility with OpenCV's drawing function.
+    """
+    # Convert corners to KeyPoint format
+    kp_left = [cv2.KeyPoint(x=float(pt[0]), y=float(pt[1]), size=PATCH_SIZE)
+               for pt in corners_left]
+    kp_right = [cv2.KeyPoint(x=float(pt[0]), y=float(pt[1]), size=PATCH_SIZE)
+                for pt in corners_right]
+
+    # Convert matches to DMatch format
+    dmatches = [cv2.DMatch(_queryIdx=int(i), _trainIdx=int(j), _distance=1.0 - score)
+                for (i, j), score in zip(matches, scores)]
+
+    # Sort by score (best first)
+    dmatches_sorted = sorted(dmatches, key=lambda m: m.distance)
+
+    # Draw top 50 matches for clarity
+    num_draw = min(50, len(dmatches_sorted))
+
+    # Convert images to RGB for drawing
+    img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB)
+    img_right_rgb = cv2.cvtColor(img_right, cv2.COLOR_BGR2RGB)
+
+    match_img = cv2.drawMatches(
+        img_left_rgb, kp_left,
+        img_right_rgb, kp_right,
+        dmatches_sorted[:num_draw],
+        None,
+        matchColor=(0, 255, 0),
+        singlePointColor=(255, 0, 0),
+        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
+    )
+
+    fig, ax = plt.subplots(1, 1, figsize=(18, 8))
+    ax.imshow(match_img)
+    ax.set_title(f"Top {num_draw} Matched Pairs (of {len(matches)} total, sorted by NCC score)",
+                 fontsize=14, fontweight="bold")
+    ax.axis("off")
+
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "08_matches.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
     plt.show()
@@ -530,6 +550,11 @@ def main():
         matches, ncc_scores, valid_corners_left, valid_corners_right
     )
     display_filtering(valid_corners_left, valid_corners_right, matches, filtered_matches)
+
+    # Step 10: Match visualization
+    print("\n[Step 10] Visualizing matches...")
+    display_matches(img_left, img_right, valid_corners_left, valid_corners_right,
+                    filtered_matches, filtered_scores)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
