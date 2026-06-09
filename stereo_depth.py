@@ -39,7 +39,12 @@ SUBPIX_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001
 PATCH_SIZE = 15
 
 # NCC matching parameters
-NCC_THRESHOLD = 0.8         # Minimum NCC score to accept a match
+NCC_THRESHOLD = 0.8
+
+# Match filtering parameters
+EPIPOLAR_TOLERANCE = 5      # Max vertical (y) difference in pixels for epipolar constraint
+MIN_DISPARITY = 1           # Minimum horizontal displacement (pixels)
+MAX_DISPARITY = 200         # Maximum horizontal displacement (pixels)
 
 def load_stereo_pair(left_path, right_path):
     """Load left and right stereo images."""
@@ -120,10 +125,6 @@ def display_preprocessing(gray_left, gray_right, blur_left, blur_right):
 def detect_harris_corners(blur_img):
     """
     Detect corners using Harris-Stephens corner detector.
-    
-    The Harris response R is computed as:
-        R = det(M) - k * trace(M)^2
-    where M is the structure tensor (second moment matrix).
     """
     img_float = np.float32(blur_img)
     harris_response = cv2.cornerHarris(img_float, HARRIS_BLOCK_SIZE, HARRIS_KSIZE, HARRIS_K)
@@ -264,9 +265,6 @@ def display_refinement(img_left, img_right, corners_left_raw, corners_right_raw,
 def extract_patches(blur_img, corners, patch_size=PATCH_SIZE):
     """
     Extract NxN intensity patches around each corner as feature descriptors.
-    
-    Each patch is normalized (zero mean, unit variance) for robustness
-    against brightness/contrast differences between left and right images.
     """
     half = patch_size // 2
     h, w = blur_img.shape
@@ -345,28 +343,19 @@ def match_features_ncc(patches_left, corners_left, patches_right, corners_right)
     NCC formula for normalized patches (zero mean, unit variance):
         NCC(a, b) = sum(a * b) / N
     
-    where N is the number of pixels in the patch.
     NCC = 1.0 means perfect match, NCC = -1.0 means inverse match.
-    
-    For each left corner, we find the best matching right corner
-    with NCC above the threshold.
     """
     n_left = len(patches_left)
     n_right = len(patches_right)
-    n_pixels = patches_left[0].size  # Total pixels per patch
+    n_pixels = patches_left[0].size
 
     print(f"Matching {n_left} left patches against {n_right} right patches...")
 
-    # Flatten patches for vectorized NCC computation
-    left_flat = patches_left.reshape(n_left, -1)    # (N_left, patch_pixels)
-    right_flat = patches_right.reshape(n_right, -1)  # (N_right, patch_pixels)
+    left_flat = patches_left.reshape(n_left, -1)
+    right_flat = patches_right.reshape(n_right, -1)
 
-    # Compute NCC matrix: each entry (i, j) = NCC between left[i] and right[j]
-    # Since patches are already normalized (zero mean, unit std):
-    # NCC = dot(a, b) / N
-    ncc_matrix = (left_flat @ right_flat.T) / n_pixels  # (N_left, N_right)
+    ncc_matrix = (left_flat @ right_flat.T) / n_pixels
 
-    # For each left patch, find best right match
     matches = []
     ncc_scores = []
 
@@ -387,6 +376,104 @@ def match_features_ncc(patches_left, corners_left, patches_right, corners_right)
               f"mean={ncc_scores.mean():.4f}")
 
     return matches, ncc_scores
+
+def filter_matches(matches, ncc_scores, corners_left, corners_right):
+    """
+    Filter matches using epipolar and disparity constraints.
+    
+    Epipolar constraint: In a rectified stereo pair, matched points must
+    lie on the same horizontal scanline. We allow a small tolerance for
+    imperfect rectification.
+    
+    Disparity constraint: The horizontal displacement must be positive
+    (left image point is to the right of right image point) and within
+    a reasonable range.
+    """
+    filtered_matches = []
+    filtered_scores = []
+    
+    rejected_epipolar = 0
+    rejected_disparity = 0
+
+    for k, (i, j) in enumerate(matches):
+        left_pt = corners_left[i]    # (x, y)
+        right_pt = corners_right[j]  # (x, y)
+
+        # Epipolar constraint: y-coordinates must be similar
+        y_diff = abs(left_pt[1] - right_pt[1])
+        if y_diff > EPIPOLAR_TOLERANCE:
+            rejected_epipolar += 1
+            continue
+
+        # Disparity: horizontal displacement (left_x - right_x)
+        # In a standard stereo setup, objects appear shifted to the right
+        # in the left image compared to the right image
+        disparity = left_pt[0] - right_pt[0]
+        if disparity < MIN_DISPARITY or disparity > MAX_DISPARITY:
+            rejected_disparity += 1
+            continue
+
+        filtered_matches.append((i, j))
+        filtered_scores.append(ncc_scores[k])
+
+    filtered_matches = np.array(filtered_matches)
+    filtered_scores = np.array(filtered_scores)
+
+    print(f"Matches before filtering: {len(matches)}")
+    print(f"Rejected (epipolar, |dy| > {EPIPOLAR_TOLERANCE}px): {rejected_epipolar}")
+    print(f"Rejected (disparity not in [{MIN_DISPARITY}, {MAX_DISPARITY}]): {rejected_disparity}")
+    print(f"Matches after filtering: {len(filtered_matches)}")
+
+    return filtered_matches, filtered_scores
+
+def display_filtering(corners_left, corners_right, matches_before, matches_after):
+    """Display match filtering results — histogram of y-differences and disparities."""
+    # Compute y-differences and disparities for all raw matches
+    y_diffs_before = []
+    disparities_before = []
+    for (i, j) in matches_before:
+        lp = corners_left[i]
+        rp = corners_right[j]
+        y_diffs_before.append(lp[1] - rp[1])
+        disparities_before.append(lp[0] - rp[0])
+
+    y_diffs_after = []
+    disparities_after = []
+    for (i, j) in matches_after:
+        lp = corners_left[i]
+        rp = corners_right[j]
+        y_diffs_after.append(lp[1] - rp[1])
+        disparities_after.append(lp[0] - rp[0])
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Y-difference histogram
+    axes[0].hist(y_diffs_before, bins=50, alpha=0.5, color="red", label=f"Before ({len(matches_before)})")
+    axes[0].hist(y_diffs_after, bins=50, alpha=0.7, color="green", label=f"After ({len(matches_after)})")
+    axes[0].axvline(-EPIPOLAR_TOLERANCE, color="blue", linestyle="--", label=f"±{EPIPOLAR_TOLERANCE}px")
+    axes[0].axvline(EPIPOLAR_TOLERANCE, color="blue", linestyle="--")
+    axes[0].set_xlabel("Y-difference (left_y - right_y)")
+    axes[0].set_ylabel("Count")
+    axes[0].set_title("Epipolar Constraint Filter")
+    axes[0].legend()
+
+    # Disparity histogram
+    axes[1].hist(disparities_before, bins=50, alpha=0.5, color="red", label=f"Before ({len(matches_before)})")
+    axes[1].hist(disparities_after, bins=50, alpha=0.7, color="green", label=f"After ({len(matches_after)})")
+    axes[1].axvline(MIN_DISPARITY, color="blue", linestyle="--", label=f"[{MIN_DISPARITY}, {MAX_DISPARITY}]px")
+    axes[1].axvline(MAX_DISPARITY, color="blue", linestyle="--")
+    axes[1].set_xlabel("Disparity (left_x - right_x)")
+    axes[1].set_ylabel("Count")
+    axes[1].set_title("Disparity Range Filter")
+    axes[1].legend()
+
+    plt.suptitle("Match Filtering: Epipolar + Disparity Constraints", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "07_filtering.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
 
 def main():
     """Main pipeline for stereo depth measurement."""
@@ -436,6 +523,13 @@ def main():
         patches_left, valid_corners_left,
         patches_right, valid_corners_right
     )
+
+    # Step 9: Match filtering (epipolar + disparity constraints)
+    print("\n[Step 9] Filtering matches...")
+    filtered_matches, filtered_scores = filter_matches(
+        matches, ncc_scores, valid_corners_left, valid_corners_right
+    )
+    display_filtering(valid_corners_left, valid_corners_right, matches, filtered_matches)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
