@@ -29,11 +29,14 @@ HARRIS_K = 0.04
 HARRIS_THRESHOLD = 0.01
 
 # Corner refinement parameters
-NMS_DISTANCE = 10           # Minimum distance between corners (pixels)
-MAX_CORNERS = 1500          # Maximum number of corners to keep
-SUBPIX_WIN = (5, 5)         # Sub-pixel refinement window
+NMS_DISTANCE = 10
+MAX_CORNERS = 1500
+SUBPIX_WIN = (5, 5)
 SUBPIX_ZERO_ZONE = (-1, -1)
 SUBPIX_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+
+# Feature descriptor parameters
+PATCH_SIZE = 15             # NxN patch around each corner (must be odd)
 
 def load_stereo_pair(left_path, right_path):
     """Load left and right stereo images."""
@@ -191,8 +194,6 @@ def refine_corners(blur_img, harris_response, corners_xy):
        well-spaced, strongest corners (enforces minimum distance).
     2. Sub-pixel: Use cv2.cornerSubPix for sub-pixel localization.
     """
-    # Use goodFeaturesToTrack with Harris mode for built-in NMS
-    # This selects the top corners with minimum distance between them
     corners_gftt = cv2.goodFeaturesToTrack(
         blur_img,
         maxCorners=MAX_CORNERS,
@@ -208,7 +209,6 @@ def refine_corners(blur_img, harris_response, corners_xy):
 
     print(f"After NMS (minDistance={NMS_DISTANCE}): {len(corners_gftt)} corners")
 
-    # Sub-pixel refinement for better accuracy
     corners_subpix = cv2.cornerSubPix(
         blur_img,
         corners_gftt,
@@ -217,7 +217,6 @@ def refine_corners(blur_img, harris_response, corners_xy):
         SUBPIX_CRITERIA
     )
 
-    # Reshape from (N, 1, 2) to (N, 2)
     corners_refined = corners_subpix.reshape(-1, 2)
     print(f"After sub-pixel refinement: {len(corners_refined)} corners")
 
@@ -228,7 +227,6 @@ def display_refinement(img_left, img_right, corners_left_raw, corners_right_raw,
     """Display before/after refinement comparison."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # Before refinement
     img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB)
     img_right_rgb = cv2.cvtColor(img_right, cv2.COLOR_BGR2RGB)
 
@@ -244,7 +242,6 @@ def display_refinement(img_left, img_right, corners_left_raw, corners_right_raw,
     axes[0, 1].set_title(f"Right BEFORE — {len(corners_right_raw)} corners")
     axes[0, 1].axis("off")
 
-    # After refinement
     axes[1, 0].imshow(img_left_rgb)
     axes[1, 0].scatter(corners_left_ref[:, 0], corners_left_ref[:, 1],
                        c="lime", s=8, alpha=0.8, edgecolors="black", linewidths=0.3)
@@ -261,6 +258,91 @@ def display_refinement(img_left, img_right, corners_left_raw, corners_right_raw,
     plt.tight_layout()
 
     output_path = os.path.join(OUTPUT_DIR, "05_refinement.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
+
+def extract_patches(blur_img, corners, patch_size=PATCH_SIZE):
+    """
+    Extract NxN intensity patches around each corner as feature descriptors.
+    
+    Each patch is normalized (zero mean, unit variance) for robustness
+    against brightness/contrast differences between left and right images.
+    
+    Corners too close to the image border are discarded.
+    """
+    half = patch_size // 2
+    h, w = blur_img.shape
+    patches = []
+    valid_corners = []
+
+    for (x, y) in corners:
+        xi, yi = int(round(x)), int(round(y))
+
+        # Skip corners too close to the border
+        if yi - half < 0 or yi + half >= h or xi - half < 0 or xi + half >= w:
+            continue
+
+        # Extract patch
+        patch = blur_img[yi - half:yi + half + 1, xi - half:xi + half + 1].astype(np.float64)
+
+        # Normalize: zero mean, unit standard deviation
+        mean = patch.mean()
+        std = patch.std()
+        if std < 1e-6:
+            continue  # Skip flat (featureless) patches
+
+        patch_normalized = (patch - mean) / std
+
+        patches.append(patch_normalized)
+        valid_corners.append([x, y])
+
+    patches = np.array(patches)
+    valid_corners = np.array(valid_corners)
+
+    print(f"Patches extracted: {len(patches)} (patch_size={patch_size}x{patch_size})")
+    print(f"Corners discarded (border/flat): {len(corners) - len(valid_corners)}")
+
+    return patches, valid_corners
+
+def display_patches(blur_img, valid_corners, patches):
+    """Display a sample of extracted patches to verify descriptor extraction."""
+    # Show 10 random sample patches
+    num_samples = min(10, len(patches))
+    indices = np.random.choice(len(patches), num_samples, replace=False)
+    indices = np.sort(indices)
+
+    fig, axes = plt.subplots(2, num_samples, figsize=(16, 5))
+
+    for i, idx in enumerate(indices):
+        cx, cy = valid_corners[idx]
+
+        # Top row: zoomed-in region around corner on original image
+        half_view = 30
+        xi, yi = int(round(cx)), int(round(cy))
+        y1 = max(0, yi - half_view)
+        y2 = min(blur_img.shape[0], yi + half_view)
+        x1 = max(0, xi - half_view)
+        x2 = min(blur_img.shape[1], xi + half_view)
+        region = blur_img[y1:y2, x1:x2]
+
+        axes[0, i].imshow(region, cmap="gray")
+        axes[0, i].scatter([xi - x1], [yi - y1], c="red", s=20, marker="+")
+        axes[0, i].set_title(f"Corner {idx}", fontsize=8)
+        axes[0, i].axis("off")
+
+        # Bottom row: normalized patch
+        axes[1, i].imshow(patches[idx], cmap="gray")
+        axes[1, i].set_title(f"{PATCH_SIZE}×{PATCH_SIZE}", fontsize=8)
+        axes[1, i].axis("off")
+
+    axes[0, 0].set_ylabel("Region", fontsize=10)
+    axes[1, 0].set_ylabel("Patch", fontsize=10)
+
+    plt.suptitle("Sample Feature Descriptors (Normalized Patches)", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "06_patches.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
     plt.show()
@@ -300,6 +382,12 @@ def main():
     corners_right_refined = refine_corners(blur_right, harris_response_right, corners_right)
     display_refinement(img_left, img_right, corners_left, corners_right,
                        corners_left_refined, corners_right_refined)
+
+    # Step 7: Feature descriptor extraction
+    print("\n[Step 7] Extracting feature descriptors...")
+    patches_left, valid_corners_left = extract_patches(blur_left, corners_left_refined)
+    patches_right, valid_corners_right = extract_patches(blur_right, corners_right_refined)
+    display_patches(blur_left, valid_corners_left, patches_left)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
