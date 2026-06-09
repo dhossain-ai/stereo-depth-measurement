@@ -23,10 +23,10 @@ GAUSSIAN_KERNEL = (5, 5)
 GAUSSIAN_SIGMA = 1.0
 
 # Harris corner detection parameters
-HARRIS_BLOCK_SIZE = 2       # Neighborhood size for corner detection
-HARRIS_KSIZE = 3            # Sobel operator aperture size
-HARRIS_K = 0.04             # Harris detector free parameter
-HARRIS_THRESHOLD = 0.01     # Threshold as fraction of max corner response
+HARRIS_BLOCK_SIZE = 2
+HARRIS_KSIZE = 3
+HARRIS_K = 0.04
+HARRIS_THRESHOLD = 0.01
 
 def load_stereo_pair(left_path, right_path):
     """Load left and right stereo images."""
@@ -114,21 +114,15 @@ def detect_harris_corners(blur_img):
     
     Corners have large positive R values.
     """
-    # Convert to float32 (required by cv2.cornerHarris)
     img_float = np.float32(blur_img)
-
-    # Compute Harris corner response
     harris_response = cv2.cornerHarris(img_float, HARRIS_BLOCK_SIZE, HARRIS_KSIZE, HARRIS_K)
 
     print(f"Harris response: min={harris_response.min():.6f}, max={harris_response.max():.6f}")
 
-    # Threshold to keep only strong corners
     threshold = HARRIS_THRESHOLD * harris_response.max()
     corner_mask = harris_response > threshold
 
-    # Get corner coordinates (y, x)
     corners_yx = np.argwhere(corner_mask)
-    # Convert to (x, y) format
     corners_xy = corners_yx[:, ::-1]
 
     print(f"Corners detected: {len(corners_xy)} (threshold={HARRIS_THRESHOLD} × max)")
@@ -139,12 +133,10 @@ def display_harris_left(img_left, harris_response, corners_xy):
     """Display Harris corner response heatmap and detected corners on left image."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    # Harris response heatmap
     axes[0].imshow(harris_response, cmap="hot")
     axes[0].set_title("Harris Corner Response (Left)")
     axes[0].axis("off")
 
-    # Corners overlaid on original image
     img_display = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB).copy()
     axes[1].imshow(img_display)
     axes[1].scatter(corners_xy[:, 0], corners_xy[:, 1],
@@ -156,6 +148,34 @@ def display_harris_left(img_left, harris_response, corners_xy):
     plt.tight_layout()
 
     output_path = os.path.join(OUTPUT_DIR, "03_harris_left.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved: {output_path}")
+    plt.show()
+
+def display_harris_both(img_left, img_right, corners_left, corners_right):
+    """Display Harris corners on both images side by side."""
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Left image with corners
+    img_left_rgb = cv2.cvtColor(img_left, cv2.COLOR_BGR2RGB).copy()
+    axes[0].imshow(img_left_rgb)
+    axes[0].scatter(corners_left[:, 0], corners_left[:, 1],
+                    c="red", s=2, alpha=0.6)
+    axes[0].set_title(f"Left — {len(corners_left)} corners")
+    axes[0].axis("off")
+
+    # Right image with corners
+    img_right_rgb = cv2.cvtColor(img_right, cv2.COLOR_BGR2RGB).copy()
+    axes[1].imshow(img_right_rgb)
+    axes[1].scatter(corners_right[:, 0], corners_right[:, 1],
+                    c="cyan", s=2, alpha=0.6)
+    axes[1].set_title(f"Right — {len(corners_right)} corners")
+    axes[1].axis("off")
+
+    plt.suptitle("Harris-Stephens Corner Detection — Both Images", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+
+    output_path = os.path.join(OUTPUT_DIR, "04_harris_both.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
     plt.show()
@@ -183,6 +203,11 @@ def main():
     print("\n[Step 4] Harris corner detection (left image)...")
     harris_response_left, corners_left = detect_harris_corners(blur_left)
     display_harris_left(img_left, harris_response_left, corners_left)
+
+    # Step 5: Harris corner detection on right image
+    print("\n[Step 5] Harris corner detection (right image)...")
+    harris_response_right, corners_right = detect_harris_corners(blur_right)
+    display_harris_both(img_left, img_right, corners_left, corners_right)
 
     print("\n" + "=" * 40)
     print("Pipeline complete.")
